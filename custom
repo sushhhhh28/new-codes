@@ -1,0 +1,423 @@
+1) CI/CD pipeline using GitHub action - deploy Static website on AWS S3 and website exposed publicly
+
+-- Pre requisites in Secret:
+AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY
+
+-- GitHub workflow file:
+
+name: Upload Website
+
+on:
+  push:
+    branches:
+    - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v1
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+     # or whatever generates ./public/
+
+
+    - name: Deploy static site to S3 bucket
+      run: aws s3 sync . s3://github-action-web  --delete
+
+-- In the bucket policies, add this:
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "PublicReadGetObject",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::sush028/*" -- [Your Bucket ARN]
+        }
+    ]
+}
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+2) Create an EC2 instance using ansible
+
+-- Configure ansible
+add ansible.cfg from https://github.com/sanjayguruji/ansible-code/blob/main/ansible.cfg
+
+  **yum install awscli**
+
+**  33  yum install pip**
+**  34  pip install boto**
+**  35  pip install boto3**
+**  36  pip install botocore**
+**  39  ansible-galaxy collection install amazon.aws**
+**  40  vi creds.yaml  (Add your IAM credentials here)**
+**  41  aws configure**
+**  42  vi hosts**
+
+[localhost]
+localhost 
+
+
+**  43  vi ec2.yaml (paste the code from GIT )**
+**  45  ansible-playbook ec2.yaml --syntax-check**
+**  46  ansible-playbook ec2.yaml**
+**  49 ssh-keygen (The generated key must be pasted in the controllers authorized_keys file)**
+   50 ansible-playbook ec2.yaml
+
+---
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+
+3) Pull Ubuntu image from Docker and launch a web application on container with 8080
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+4) Deploy Nginx on K8s Cluster and make it available across cluster on port 80
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: devops
+spec:
+  containers:
+  - name: web-app
+    image: nginx:1.14
+    ports:
+    - containerPort: 80
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+5) VPC network using Ansible:
+
+[root@ansible ~]# cat vpc-subnet.tf
+provider "aws" {
+        region = "us-east-1"
+}
+
+#variables
+
+variable "vpc_cidr" {
+        default = "10.1.0.0/16"
+        description = "cidr for our custom vpc"
+}
+
+variable "subnet_cidr" {
+        default = "10.1.1.0/24"
+        description = "cidr for subnet"
+}
+
+variable "availability_zone" {
+        default = "us-east-1a"
+        description = "AZ for subnet"
+}
+
+variable "instance_ami" {
+        default = "ami-07860a2d7eb515d9a"
+        description = "default ami for instances"
+}
+
+variable "instance_type" {
+        default = "t3.micro"
+        description = "instance type for ec2"
+}
+
+variable "env_tag" {
+        default = "production"
+        description = "environment tag"
+}
+
+
+# code - creating vpc
+
+resource "aws_vpc" "vpcone" {
+        cidr_block = "${var.vpc_cidr}"
+        tags = {
+                Name = "${var.env_tag}"
+        }
+}
+
+# code - creating IG and attaching it to VPC
+
+resource "aws_internet_gateway" "vpcone-ig" {
+        vpc_id = "${aws_vpc.vpcone.id}"
+        tags = {
+                Name = "${var.env_tag}"
+        }
+}
+
+# code - create subnet inside our vpc
+
+resource "aws_subnet" "subnet_public" {
+        vpc_id = "${aws_vpc.vpcone.id}"
+        cidr_block = "${var.subnet_cidr}"
+        map_public_ip_on_launch = "true"
+        availability_zone = "${var.availability_zone}"
+        tags = {
+                Name = "${var.env_tag}"
+        }
+
+}
+
+# code - modifying route
+
+resource "aws_route_table" "rtb_public" {
+        vpc_id = "${aws_vpc.vpcone.id}"
+        route {
+                cidr_block = "0.0.0.0/0"
+                gateway_id = "${aws_internet_gateway.vpcone-ig.id}"
+        }
+        tags = {
+                Name = "${var.env_tag}"
+        }
+}
+
+
+# code - attaching subnets to route table
+
+resource "aws_route_table_association" "rta_subnet_public" {
+        subnet_id = "${aws_subnet.subnet_public.id}"
+        route_table_id = "${aws_route_table.rtb_public.id}"
+}
+
+
+# code - create security group
+
+resource "aws_security_group" "sg_newvpc" {
+        name = "newvpc"
+        vpc_id = "${aws_vpc.vpcone.id}"
+
+        ingress {
+                from_port = 22
+                to_port = 22
+                protocol = "tcp"
+                cidr_blocks = ["0.0.0.0/0"]
+        }
+
+        egress {
+                from_port = 0
+                to_port = 0
+                protocol = "-1"
+                cidr_blocks = ["0.0.0.0/0"]
+        }
+
+        tags = {
+                Name = "${var.env_tag}"
+        }
+
+}
+
+
+# code - create instance
+
+resource "aws_instance" "test" {
+        ami = "${var.instance_ami}"
+        instance_type = "${var.instance_type}"
+        subnet_id = "${aws_subnet.subnet_public.id}"
+        vpc_security_group_ids = ["${aws_security_group.sg_newvpc.id}"]
+        tags = {
+                Name = "${var.env_tag}"
+        }
+}
+
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------
+
+6) Pod with nginx image:
+
+ 2  apt-get update -y
+    3  curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    4  unzip awscliv2.zip
+    5  sudo ./aws/install
+    6  aws configure
+    7  curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+    8  sudo mv /tmp/eksctl /usr/local/bin
+    9  eksctl version
+   10  curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+   11  kubectl version --client
+   12  ssh-keygen
+   17  aws configure
+   23  eksctl create nodegroup   --cluster sush-cluster   --region us-east-1   --name my-node-group   --node-ami-family Ubuntu2204   --node-type t3.small   --subnet-ids subnet-06776fcfd69d4dad5,subnet-0199a31b66b72133f   --nodes 3   --nodes-min 2   --nodes-max 4   --ssh-access   --ssh-public-key /root/.ssh/id_ed25519.pub
+   24  aws eks update-kubeconfig --region us-east-1 --name sush-cluster
+   25  kubectl get nodes
+   27  ll
+   28  vim pod.yaml
+   33  kubectl apply -f pod.yaml
+   34  kubectl get pod
+   35  kubectl describe pod devops
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+
+7) Deployment.yaml with HPA:
+
+Deployment.yaml:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: web
+        image: nginx:1.14
+        ports:
+        - containerPort: 80
+
+
+
+
+HPA:
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-app-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nginx-deployment
+  minReplicas: 4
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+8) Enable HTTPD, Copy Fstab into /tmp using ansible:
+
+- name: tasks
+  hosts: all
+  tasks:
+
+    - name: Install httpd
+      dnf:
+        name: httpd
+        state: latest
+
+    - name: Start and enable httpd service
+      service:
+        name: httpd
+        state: started
+        enabled: true
+
+    - name: Copy fstab file to /tmp
+      copy:
+        src: /etc/fstab
+        dest: /tmp/fstab
+        remote_src: yes
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+9) Using Terraform create EC2 instance:
+EC2 Instance with security group - Terraform
+
+provider "aws" {
+
+  region = "us-east-1"
+
+  access_key = ""
+
+  secret_key = ""
+
+}
+
+resource "aws_instance" "my-resource-3" {
+
+  ami = "ami-0341d95f75f311023"
+
+  instance_type = "t3.micro"
+
+  key_name = "new-kp"
+
+  vpc_security_group_ids = ["${aws_security_group.terra-sg.id}"]
+
+  tags = {
+
+    Name = "dev-server-3"
+
+  }
+
+}
+
+resource "aws_security_group" "terra-sg" {
+
+  name = "terra-sg"
+
+  description = "Allow TLS inbound traffic and all outbound traffic"
+
+  vpc_id = "vpc-0ab4479ccb7882055"
+
+  tags = {
+
+    Name = "terra-sg"
+
+  }
+
+}
+
+resource "aws_vpc_security_group_ingress_rule" "allow_tls_ipv4" {
+
+  security_group_id = aws_security_group.terra-sg.id
+
+  cidr_ipv4 = "0.0.0.0/0"
+
+  from_port = 443
+
+  ip_protocol = "tcp"
+
+  to_port = 443
+
+}
+
+resource "aws_vpc_security_group_ingress_rule" "allow_ssh_ipv4" {
+
+  security_group_id = aws_security_group.terra-sg.id
+
+  cidr_ipv4 = "0.0.0.0/0"
+
+  from_port = 22
+
+  ip_protocol = "tcp"
+
+  to_port = 22
+
+}
+
+
+resource "aws_vpc_security_group_egress_rule" "allow_all_traffic_ipv4" {
+
+  security_group_id = aws_security_group.terra-sg.id
+
+  cidr_ipv4 = "0.0.0.0/0"
+
+  ip_protocol = "-1" # semantically equivalent to all ports
+
+}
+ 
